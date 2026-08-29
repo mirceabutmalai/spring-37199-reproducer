@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>example.spring</groupId>
+    <artifactId>spring-37199-reproducer</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+
+    <name>spring-framework#37199 reproducer</name>
+    <description>
+        Standalone reproduction of the ClassFileTransformerAdapter monitor cycle that
+        two JPA persistence units produce under load-time weaving. No container, no
+        JPA provider, no database - only spring-orm, and a class loader that behaves
+        the way Tomcat's does in the two respects the cycle depends on.
+    </description>
+
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <maven.compiler.release>21</maven.compiler.release>
+
+        <!-- The version under test. 7.0.8 is where the deadlock in the issue was
+             reproduced; 7.0.6 is where it was seen in production. Override on the
+             command line to test another: -Dspring.version=7.0.7
+
+             The 6.2.x line carries the identical construct - spring-orm 6.2.13
+             disassembles to the same monitorenter around the same delegate call -
+             but SpringPersistenceUnitInfo is package private there, so this
+             reproducer, which registers through public API only, needs 7.x. -->
+        <spring.version>7.0.8</spring.version>
+        <jakarta.persistence.version>3.2.0</jakarta.persistence.version>
+
+        <exec.mainClass>example.spring37199.Reproducer</exec.mainClass>
+    </properties>
+
+    <dependencies>
+        <!-- ClassFileTransformerAdapter, and the SpringPersistenceUnitInfo that
+             creates one. Both are what is under test; nothing here reimplements them. -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-orm</artifactId>
+            <version>${spring.version}</version>
+        </dependency>
+
+        <!-- LoadTimeWeaver lives here, not in spring-core. -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-context</artifactId>
+            <version>${spring.version}</version>
+        </dependency>
+
+        <!-- jakarta.persistence.spi.ClassTransformer: the interface a persistence
+             provider implements and the adapter wraps. -->
+        <dependency>
+            <groupId>jakarta.persistence</groupId>
+            <artifactId>jakarta.persistence-api</artifactId>
+            <version>${jakarta.persistence.version}</version>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.14.1</version>
+            </plugin>
+
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.5.1</version>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>
