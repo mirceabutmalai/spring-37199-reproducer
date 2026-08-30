@@ -187,6 +187,11 @@ public final class Reproducer {
             return;
         }
 
+        if ("revised".equals(adapter)) {
+            weaver.addTransformer(new RevisedSpringAdapter(delegate));
+            return;
+        }
+
         /* The path an application takes. SpringPersistenceUnitInfo.addTransformer wraps
          * what it is handed in a ClassFileTransformerAdapter and hands that to the
          * weaver; nothing below this line is written by the reproducer. */

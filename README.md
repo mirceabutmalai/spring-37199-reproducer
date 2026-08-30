@@ -106,6 +106,8 @@ Measured on JDK 21.0.11 (Temurin), Windows 10, Maven from the command above.
 |---|---|
 | `--mode=staged` | deadlock in **118 ms** |
 | `--mode=race` | deadlock in **106–118 ms**, after 1–7 completed reads, on **5 of 5** seeds |
+| `--mode=staged --adapter=revised` | deadlock in **106 ms** |
+| `--mode=race --adapter=revised` | deadlock in **105–107 ms**, on **3 of 3** seeds |
 | `--mode=staged --adapter=threadlocal` | completes, no deadlock |
 | `--mode=race --adapter=threadlocal` | **2713** resources read, **2724** nested reads, 0 errors, no deadlock |
 
@@ -116,6 +118,25 @@ The 6.2.x line carries the identical construct — `javap -c` on spring-orm 6.2.
 `monitorenter` at offset 4 and the `ClassTransformer.transform` delegate call at offset
 33, inside it — but `SpringPersistenceUnitInfo` is package private there, so this
 reproducer, which registers through public API only, needs 7.x.
+
+## The revision made for 7.0.10
+
+The issue was closed on 2026-08-29 by
+[`133a372`](https://github.com/spring-projects/spring-framework/commit/133a372f910176d677aab692fdbfabecb356ecdd),
+*"Reduce lock-guarded boolean field to thread-local"*, milestoned 7.0.10. It changes the
+`boolean` field to a `ThreadLocal` and **keeps `synchronized (this)` around the whole
+method**, delegate call included.
+
+`--adapter=revised` is that body, copied into
+[`RevisedSpringAdapter`](src/main/java/example/spring37199/RevisedSpringAdapter.java) so
+that the released shape can be run before 7.0.10 exists. It deadlocks: 106 ms staged, and
+105–107 ms on 3 of 3 race seeds, with the same two frames naming the revised class.
+
+That is not surprising on inspection. The flag and the monitor answer two different
+questions. The flag answers *am I already inside on this thread* — and under a monitor
+admitting one thread at a time it was already thread-confined, set and cleared entirely
+inside the lock, unreadable by anybody else. The cycle is between the two adapters'
+**monitors**, which the revision leaves exactly as they were.
 
 ## The suggested fix, under the same harness
 
@@ -142,7 +163,8 @@ deadlocking run ever reaches — and finishes.
 --mode=staged        (default) put the two threads in the two positions, exactly
 --mode=race          let two threads find the interleaving on their own
 --adapter=spring     (default) Spring's ClassFileTransformerAdapter
---adapter=threadlocal    the fix the issue suggests, for comparison
+--adapter=revised        the body committed for 7.0.10: ThreadLocal, monitor kept
+--adapter=threadlocal    the fix the issue suggests: ThreadLocal, monitor removed
 --timeout=30         seconds to wait before giving up
 --names=4000         race mode only: how many distinct class resources to walk
 --seed=1             race mode only: shuffle and cache-warming seed
