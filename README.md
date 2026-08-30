@@ -108,6 +108,8 @@ Measured on JDK 21.0.11 (Temurin), Windows 10, Maven from the command above.
 | `--mode=race` | deadlock in **106–118 ms**, after 1–7 completed reads, on **5 of 5** seeds |
 | `--mode=staged --adapter=revised` | deadlock in **106 ms** |
 | `--mode=race --adapter=revised` | deadlock in **105–107 ms**, on **3 of 3** seeds |
+| `--mode=staged --adapter=chainguard` | completes, no deadlock |
+| `--mode=race --adapter=chainguard` | **2715** resources read, **2666–2731** nested reads, 0 errors, no deadlock, on **5 of 5** seeds |
 | `--mode=staged --adapter=threadlocal` | completes, no deadlock |
 | `--mode=race --adapter=threadlocal` | **2713** resources read, **2724** nested reads, 0 errors, no deadlock |
 
@@ -138,24 +140,66 @@ admitting one thread at a time it was already thread-confined, set and cleared e
 inside the lock, unreadable by anybody else. The cycle is between the two adapters'
 **monitors**, which the revision leaves exactly as they were.
 
-## The suggested fix, under the same harness
+## What the monitor is doing besides creating the ordering
 
-`--adapter=threadlocal` swaps in
-[`ThreadLocalGuardAdapter`](src/main/java/example/spring37199/ThreadLocalGuardAdapter.java):
-`ClassFileTransformerAdapter` with the `boolean` field and the monitor replaced by a
+Worth stating before either fix below, because the first version of this README skated
+over it: the monitor is not only the source of the cycle. It also means **two threads
+cannot be inside one delegate at the same time**.
+
+Neither `jakarta.persistence.spi.ClassTransformer` nor
+`java.lang.instrument.ClassFileTransformer` documents whether an implementation may be
+entered concurrently — the JDK 21 javadoc of the latter says nothing about concurrency at
+all. So a provider may have been written assuming it is not, and through this adapter that
+assumption has held. Removing the monitor changes that for every provider at once, which
+is a larger decision than removing a lock-ordering hazard.
+
+For the provider in this report it looks unnecessary. `javap -p -c` on Hibernate 7.4.6's
+`EnhancingClassTransformerImpl` shows a `ReentrantLock` taken only inside `getEnhancer`,
+around `createEnhancer` on a cache miss and released in a `finally`, with
+`Enhancer.enhance(...)` called outside it — written to be entered concurrently. But that is
+one provider, and Spring wraps whichever one is configured.
+
+The two adapters below take the two positions, so the choice can be run rather than
+argued.
+
+## Keeping the monitor — `--adapter=chainguard`
+
+[`ChainGuardAdapter`](src/main/java/example/spring37199/ChainGuardAdapter.java) keeps
+`synchronized (this)` and still cannot form the cycle. Two changes, both small:
+
+- the guard is **static**, so it means *this thread is already inside some adapter* rather
+  than *inside this one*;
+- it is read **before** the monitor is taken.
+
+A thread that re-enters the chain from inside a delegate therefore declines at every
+adapter without acquiring anything. No thread ever holds two monitors, so there is no
+ordering to invert — and two threads still cannot be inside one delegate.
+
+It completes: no deadlock staged, and 5 of 5 race seeds finish, 2715 resources read and
+2666–2731 nested reads with 0 transform errors.
+
+What it changes is that during a nested read **no** adapter transforms, where today the
+adapters after the re-entering one still do. A nested read is a delegate resolving a type
+to inspect rather than a class being defined, so declining reads closer to the intent of
+the existing comment — but it is a behaviour change, and it is the part worth arguing
+about.
+
+## Removing the monitor — `--adapter=threadlocal`
+
+[`ThreadLocalGuardAdapter`](src/main/java/example/spring37199/ThreadLocalGuardAdapter.java)
+is `ClassFileTransformerAdapter` with the `boolean` field **and** the monitor replaced by a
 `ThreadLocal`, and nothing else changed. Same class loader, same transformers, same
 staging.
 
-It exists so the claim can be run rather than argued. The guard's purpose is unchanged —
-the comment in Spring's version describes an over-eager delegate re-entering from inside
-the transform, which is the same thread coming back, which is what a `ThreadLocal`
-answers. The monitor answers a question nobody asked, about two *different* threads, and
-answers it with an ordering that can invert.
+The guard's purpose is unchanged: the comment in Spring's version describes an over-eager
+delegate re-entering from inside the transform, which is the same thread coming back, and
+a `ThreadLocal` answers exactly that. What it gives up is the serialization described
+above.
 
-That the protection is preserved rather than dropped is visible in the counts: the staged
-run makes the same 2 nested reads under either adapter, and the race run under the
-`ThreadLocal` adapter performs 2724 nested reads with 0 transform errors — more than the
-deadlocking run ever reaches — and finishes.
+That the re-entrancy protection is preserved rather than dropped is visible in the counts:
+the staged run makes the same 2 nested reads under either adapter, and the race run
+performs 2724 nested reads with 0 transform errors — more than the deadlocking run ever
+reaches — and finishes.
 
 ## Options
 
@@ -164,7 +208,8 @@ deadlocking run ever reaches — and finishes.
 --mode=race          let two threads find the interleaving on their own
 --adapter=spring     (default) Spring's ClassFileTransformerAdapter
 --adapter=revised        the body committed for 7.0.10: ThreadLocal, monitor kept
---adapter=threadlocal    the fix the issue suggests: ThreadLocal, monitor removed
+--adapter=chainguard     monitor kept, guard spans the chain and is read before the lock
+--adapter=threadlocal    ThreadLocal, monitor removed
 --timeout=30         seconds to wait before giving up
 --names=4000         race mode only: how many distinct class resources to walk
 --seed=1             race mode only: shuffle and cache-warming seed

@@ -192,6 +192,11 @@ public final class Reproducer {
             return;
         }
 
+        if ("chainguard".equals(adapter)) {
+            weaver.addTransformer(new ChainGuardAdapter(delegate));
+            return;
+        }
+
         /* The path an application takes. SpringPersistenceUnitInfo.addTransformer wraps
          * what it is handed in a ClassFileTransformerAdapter and hands that to the
          * weaver; nothing below this line is written by the reproducer. */
